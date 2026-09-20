@@ -1,84 +1,323 @@
-import type { Detection } from "@mediapipe/tasks-vision";
+import type {
+  FaceLandmarkerResult,
+} from "@mediapipe/tasks-vision";
 
 export type AttentionState =
   | "focused"
   | "away"
+  | "sleepy"
   | "absent";
 
 export interface AttentionResult {
   state: AttentionState;
+
   yaw: number;
+
   pitch: number;
+
   hasFace: boolean;
+
+  leftEyeRatio: number;
+
+  rightEyeRatio: number;
+
+  eyeRatio: number;
 }
 
 export interface AttentionSettings {
   sensitivity: number;
+
   countLookingDown: boolean;
+
+  sleepyEyeThreshold: number;
+
+  sleepyDurationMs: number;
 }
 
-interface Keypoint {
+interface Point {
   x: number;
   y: number;
 }
 
-function calculatePose(
-  keypoints: Keypoint[]
+// =========================================
+// Eye landmarks
+//
+// MediaPipe Face Landmarker provides dense
+// landmarks around both eyes.
+//
+// These are representative points around
+// each eye used to calculate an EAR-like
+// openness measurement.
+// =========================================
+
+const LEFT_EYE = {
+  left: 33,
+
+  right: 133,
+
+  top: 159,
+
+  bottom: 145,
+
+  topInner: 160,
+
+  bottomInner: 144,
+
+  topOuter: 158,
+
+  bottomOuter: 153,
+};
+
+const RIGHT_EYE = {
+  left: 362,
+
+  right: 263,
+
+  top: 386,
+
+  bottom: 374,
+
+  topInner: 387,
+
+  bottomInner: 373,
+
+  topOuter: 385,
+
+  bottomOuter: 380,
+};
+
+// =========================================
+// Sleep state
+//
+// This persists between frames so that
+// a short blink does not become "sleepy".
+// =========================================
+
+let eyesClosedSince:
+  number | null = null;
+
+// =========================================
+// Reset
+// =========================================
+
+export function resetAttentionState() {
+  eyesClosedSince = null;
+}
+
+// =========================================
+// Distance
+// =========================================
+
+function distance(
+  a: Point,
+  b: Point
 ) {
-  const eyes = [
-    keypoints[0],
-    keypoints[1],
-  ].sort((a, b) => a.x - b.x);
+  const dx =
+    a.x - b.x;
 
-  const nose = keypoints[2];
-  const mouth = keypoints[3];
+  const dy =
+    a.y - b.y;
 
-  const tragions = [
-    keypoints[4],
-    keypoints[5],
-  ].sort((a, b) => a.x - b.x);
+  return Math.sqrt(
+    dx * dx +
+      dy * dy
+  );
+}
 
-  const span =
-    tragions[1].x -
-    tragions[0].x;
+// =========================================
+// Eye openness
+//
+// EAR-like measurement:
+//
+// vertical eye opening
+// --------------------
+// horizontal eye width
+//
+// Multiple vertical pairs are averaged
+// to make the measurement less dependent
+// on one noisy landmark.
+// =========================================
 
-  let yaw: number;
+function calculateEyeRatio(
+  landmarks: Point[],
+  eye: typeof LEFT_EYE
+) {
+  const left =
+    landmarks[eye.left];
 
-  if (span > 0.02) {
+  const right =
+    landmarks[eye.right];
+
+  const top =
+    landmarks[eye.top];
+
+  const bottom =
+    landmarks[eye.bottom];
+
+  const topInner =
+    landmarks[
+      eye.topInner
+    ];
+
+  const bottomInner =
+    landmarks[
+      eye.bottomInner
+    ];
+
+  const topOuter =
+    landmarks[
+      eye.topOuter
+    ];
+
+  const bottomOuter =
+    landmarks[
+      eye.bottomOuter
+    ];
+
+  if (
+    !left ||
+    !right ||
+    !top ||
+    !bottom ||
+    !topInner ||
+    !bottomInner ||
+    !topOuter ||
+    !bottomOuter
+  ) {
+    return 1;
+  }
+
+  const width =
+    distance(
+      left,
+      right
+    );
+
+  if (width < 0.0001) {
+    return 1;
+  }
+
+  const vertical1 =
+    distance(
+      top,
+      bottom
+    );
+
+  const vertical2 =
+    distance(
+      topInner,
+      bottomInner
+    );
+
+  const vertical3 =
+    distance(
+      topOuter,
+      bottomOuter
+    );
+
+  const verticalAverage =
+    (vertical1 +
+      vertical2 +
+      vertical3) /
+    3;
+
+  return (
+    verticalAverage /
+    width
+  );
+}
+
+// =========================================
+// Head pose
+//
+// Uses the same basic normalized geometry
+// as the previous implementation.
+// =========================================
+
+function calculatePose(
+  landmarks: Point[]
+) {
+  const nose =
+    landmarks[1];
+
+  const leftEye =
+    landmarks[33];
+
+  const rightEye =
+    landmarks[263];
+
+  const leftEar =
+    landmarks[234];
+
+  const rightEar =
+    landmarks[454];
+
+  const mouth =
+    landmarks[13];
+
+  if (
+    !nose ||
+    !leftEye ||
+    !rightEye ||
+    !leftEar ||
+    !rightEar ||
+    !mouth
+  ) {
+    return {
+      yaw: 0,
+      pitch: 0,
+    };
+  }
+
+  const earSpan =
+    rightEar.x -
+    leftEar.x;
+
+  let yaw=0;
+
+  if (
+    Math.abs(earSpan) >
+    0.02
+  ) {
     yaw =
       ((nose.x -
-        tragions[0].x) /
-        span -
+        leftEar.x) /
+        earSpan -
         0.5) *
       2;
   } else {
     const eyeMid =
-      (eyes[0].x +
-        eyes[1].x) /
+      (leftEye.x +
+        rightEye.x) /
       2;
 
-    const distance =
+    const eyeDistance =
       Math.max(
         0.0001,
-        eyes[1].x -
-          eyes[0].x
+        Math.abs(
+          rightEye.x -
+            leftEye.x
+        )
       );
 
     yaw =
-      (nose.x - eyeMid) /
-      distance;
+      (nose.x -
+        eyeMid) /
+      eyeDistance;
   }
 
   const eyeMidY =
-    (eyes[0].y +
-      eyes[1].y) /
+    (leftEye.y +
+      rightEye.y) /
     2;
 
   const height =
-    mouth.y - eyeMidY;
+    mouth.y -
+    eyeMidY;
 
   const pitch =
-    height > 0.01
+    Math.abs(height) >
+    0.01
       ? ((nose.y -
           eyeMidY) /
           height -
@@ -99,74 +338,228 @@ function calculatePose(
   };
 }
 
+// =========================================
+// Main classifier
+// =========================================
+
 export function classifyAttention(
-  detection: Detection | null,
+  result:
+    | FaceLandmarkerResult
+    | null,
+
   settings: AttentionSettings,
+
   yawOffset = 0,
+
   pitchOffset = 0
 ): AttentionResult {
-  // No face detected
   if (
-    !detection ||
-    !detection.keypoints ||
-    detection.keypoints.length < 6
+    !result ||
+    !result.faceLandmarks ||
+    result.faceLandmarks.length ===
+      0
   ) {
+    eyesClosedSince = null;
+
     return {
       state: "absent",
+
       yaw: 0,
+
       pitch: 0,
+
       hasFace: false,
+
+      leftEyeRatio: 0,
+
+      rightEyeRatio: 0,
+
+      eyeRatio: 0,
+    };
+  }
+
+  const landmarks =
+    result.faceLandmarks[0];
+
+  if (
+    !landmarks ||
+    landmarks.length <
+      400
+  ) {
+    eyesClosedSince = null;
+
+    return {
+      state: "absent",
+
+      yaw: 0,
+
+      pitch: 0,
+
+      hasFace: false,
+
+      leftEyeRatio: 0,
+
+      rightEyeRatio: 0,
+
+      eyeRatio: 0,
     };
   }
 
   const pose =
     calculatePose(
-      detection.keypoints
+      landmarks
     );
 
-  const yaw = pose.yaw;
-  const pitch = pose.pitch;
+  const yaw =
+    pose.yaw;
+
+  const pitch =
+    pose.pitch;
+
+  const leftEyeRatio =
+    calculateEyeRatio(
+      landmarks,
+      LEFT_EYE
+    );
+
+  const rightEyeRatio =
+    calculateEyeRatio(
+      landmarks,
+      RIGHT_EYE
+    );
+
+  const eyeRatio =
+    (leftEyeRatio +
+      rightEyeRatio) /
+    2;
+
+  // =====================================
+  // Sleep detection
+  //
+  // Only trigger after continuous
+  // eye closure.
+  // =====================================
+
+  const eyesClosed =
+    eyeRatio <
+    settings.sleepyEyeThreshold;
+
+  const now =
+    performance.now();
+
+  if (eyesClosed) {
+    if (
+      eyesClosedSince ===
+      null
+    ) {
+      eyesClosedSince = now;
+    }
+  } else {
+    eyesClosedSince = null;
+  }
+
+  const sleepy =
+    eyesClosed &&
+    eyesClosedSince !==
+      null &&
+    now -
+      eyesClosedSince >=
+      settings.sleepyDurationMs;
+
+  if (sleepy) {
+    return {
+      state: "sleepy",
+
+      yaw,
+
+      pitch,
+
+      hasFace: true,
+
+      leftEyeRatio,
+
+      rightEyeRatio,
+
+      eyeRatio,
+    };
+  }
+
+  // =====================================
+  // Looking left/right
+  // =====================================
 
   const yawDifference =
     Math.abs(
-      yaw - yawOffset
+      yaw -
+        yawOffset
     );
 
   const yawThreshold =
-    settings.sensitivity / 100;
+    settings.sensitivity /
+    100;
 
-  // Looking left or right
   if (
     yawDifference >
     yawThreshold
   ) {
     return {
       state: "away",
+
       yaw,
+
       pitch,
+
       hasFace: true,
+
+      leftEyeRatio,
+
+      rightEyeRatio,
+
+      eyeRatio,
     };
   }
 
-  // Optional looking up/down detection
+  // =====================================
+  // Optional looking up/down
+  // =====================================
+
   if (
     settings.countLookingDown &&
     Math.abs(
-      pitch - pitchOffset
+      pitch -
+        pitchOffset
     ) > 0.5
   ) {
     return {
       state: "away",
+
       yaw,
+
       pitch,
+
       hasFace: true,
+
+      leftEyeRatio,
+
+      rightEyeRatio,
+
+      eyeRatio,
     };
   }
 
   return {
     state: "focused",
+
     yaw,
+
     pitch,
+
     hasFace: true,
+
+    leftEyeRatio,
+
+    rightEyeRatio,
+
+    eyeRatio,
   };
 }

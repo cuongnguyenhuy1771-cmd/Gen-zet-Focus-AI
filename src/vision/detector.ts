@@ -1,56 +1,82 @@
 import {
-  FaceDetector,
+  FaceLandmarker,
   FilesetResolver,
-  type Detection,
+  type FaceLandmarkerResult,
 } from "@mediapipe/tasks-vision";
 
 const MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite";
+  "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 
-let detector: FaceDetector | null = null;
+const WASM_URL =
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm";
 
-export async function loadFaceDetector(): Promise<FaceDetector> {
-  if (detector) {
-    return detector;
+let faceLandmarker:
+  | FaceLandmarker
+  | null = null;
+
+export async function loadFaceLandmarker(): Promise<FaceLandmarker> {
+  if (faceLandmarker) {
+    return faceLandmarker;
   }
 
-  const vision = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-  );
+  const vision =
+    await FilesetResolver.forVisionTasks(
+      WASM_URL
+    );
 
-  detector = await FaceDetector.createFromOptions(vision, {
-    baseOptions: {
-      modelAssetPath: MODEL_URL,
-      delegate: "GPU",
-    },
-    runningMode: "VIDEO",
-    minDetectionConfidence: 0.5,
-  });
+  faceLandmarker =
+    await FaceLandmarker.createFromOptions(
+      vision,
+      {
+        baseOptions: {
+          modelAssetPath:
+            MODEL_URL,
 
-  return detector;
+          delegate: "GPU",
+        },
+
+        runningMode: "VIDEO",
+
+        numFaces: 1,
+
+        minFaceDetectionConfidence:
+          0.5,
+
+        minFacePresenceConfidence:
+          0.5,
+
+        minTrackingConfidence:
+          0.5,
+
+        outputFaceBlendshapes: false,
+
+        outputFacialTransformationMatrixes:
+          false,
+      }
+    );
+
+  return faceLandmarker;
 }
 
-export function detectFace(
+export function detectFaceLandmarks(
   video: HTMLVideoElement,
   timestamp: number
-): Detection | null {
-  if (!detector) {
+): FaceLandmarkerResult | null {
+  if (!faceLandmarker) {
     return null;
   }
 
   try {
-    const result = detector.detectForVideo(video, timestamp);
-
-    if (
-      result.detections &&
-      result.detections.length > 0
-    ) {
-      return result.detections[0];
-    }
-
-    return null;
+    return faceLandmarker.detectForVideo(
+      video,
+      timestamp
+    );
   } catch (error) {
-    console.error("Face detection error:", error);
+    console.error(
+      "Face landmark detection error:",
+      error
+    );
+
     return null;
   }
 }

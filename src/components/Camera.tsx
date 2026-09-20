@@ -1,17 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
-  detectFace,
-  loadFaceDetector,
+  detectFaceLandmarks,
+  loadFaceLandmarker,
 } from "../vision/detector";
 
 import {
   classifyAttention,
+  resetAttentionState,
   type AttentionState,
 } from "../vision/attention";
 
 interface CameraProps {
   enabled: boolean;
+
   onAttentionChange: (
     state: AttentionState
   ) => void;
@@ -22,13 +28,19 @@ function Camera({
   onAttentionChange,
 }: CameraProps) {
   const videoRef =
-    useRef<HTMLVideoElement | null>(null);
+    useRef<HTMLVideoElement | null>(
+      null
+    );
 
   const streamRef =
-    useRef<MediaStream | null>(null);
+    useRef<MediaStream | null>(
+      null
+    );
 
   const animationRef =
-    useRef<number | null>(null);
+    useRef<number | null>(
+      null
+    );
 
   const lastVideoTime =
     useRef(-1);
@@ -39,81 +51,103 @@ function Camera({
   const pitchRef =
     useRef(0);
 
-  const [error, setError] =
-    useState<string | null>(null);
+  const [
+    error,
+    setError,
+  ] =
+    useState<string | null>(
+      null
+    );
 
   useEffect(() => {
     if (!enabled) {
-      onAttentionChange("absent");
+      resetAttentionState();
+
+      onAttentionChange(
+        "absent"
+      );
+
       return;
     }
 
     let cancelled = false;
 
+    resetAttentionState();
+
     async function startCamera() {
       try {
         setError(null);
 
-        // =============================
-        // Load MediaPipe
-        // =============================
+        // =================================
+        // Load Face Landmarker
+        // =================================
 
-        await loadFaceDetector();
+        await loadFaceLandmarker();
 
         if (cancelled) {
           return;
         }
 
-        // =============================
-        // Request camera access
-        // =============================
+        // =================================
+        // Camera
+        // =================================
 
         const stream =
-          await navigator.mediaDevices.getUserMedia({
-            video: {
-              width: { ideal: 640 },
-              height: { ideal: 480 },
-              facingMode: "user",
-            },
-            audio: false,
-          });
+          await navigator.mediaDevices.getUserMedia(
+            {
+              video: {
+                width: {
+                  ideal: 640,
+                },
+
+                height: {
+                  ideal: 480,
+                },
+
+                facingMode:
+                  "user",
+              },
+
+              audio: false,
+            }
+          );
 
         if (cancelled) {
           stream
             .getTracks()
-            .forEach((track) => {
-              track.stop();
-            });
+            .forEach(
+              (track) =>
+                track.stop()
+            );
 
           return;
         }
 
-        streamRef.current = stream;
+        streamRef.current =
+          stream;
 
-        // =============================
-        // Get video element
-        // =============================
-
-        const video = videoRef.current;
+        const video =
+          videoRef.current;
 
         if (video === null) {
           stream
             .getTracks()
-            .forEach((track) => {
-              track.stop();
-            });
+            .forEach(
+              (track) =>
+                track.stop()
+            );
 
-          streamRef.current = null;
+          streamRef.current =
+            null;
 
           return;
         }
 
-        // From this point onward, videoElement
-        // is guaranteed to be an HTMLVideoElement.
         const videoElement: HTMLVideoElement =
           video;
 
-        videoElement.srcObject = stream;
+        videoElement.srcObject =
+          stream;
 
         await videoElement.play();
 
@@ -121,9 +155,9 @@ function Camera({
           return;
         }
 
-        // =============================
+        // =================================
         // Detection loop
-        // =============================
+        // =================================
 
         function detectionLoop(
           timestamp: number
@@ -133,37 +167,48 @@ function Camera({
           }
 
           if (
-            videoElement.readyState >= 2 &&
+            videoElement.readyState >=
+              2 &&
             videoElement.currentTime !==
               lastVideoTime.current
           ) {
             lastVideoTime.current =
               videoElement.currentTime;
 
-            // Detect face
-            const detection =
-              detectFace(
+            const landmarks =
+              detectFaceLandmarks(
                 videoElement,
                 timestamp
               );
 
-            // Determine attention state
             const result =
               classifyAttention(
-                detection,
+                landmarks,
                 {
                   sensitivity: 22,
-                  countLookingDown: false,
+
+                  countLookingDown:
+                    true,
+
+                  sleepyEyeThreshold:
+                    0.16,
+
+                  sleepyDurationMs:
+                    2500,
                 },
+
                 yawRef.current,
+
                 pitchRef.current
               );
 
-            // =============================
+            // =================================
             // Smooth head movement
-            // =============================
+            // =================================
 
-            if (result.hasFace) {
+            if (
+              result.hasFace
+            ) {
               yawRef.current +=
                 (result.yaw -
                   yawRef.current) *
@@ -175,7 +220,6 @@ function Camera({
                 0.35;
             }
 
-            // Send result to App
             onAttentionChange(
               result.state
             );
@@ -202,7 +246,7 @@ function Camera({
         );
 
         setError(
-          "Unable to start the camera or face detector."
+          "Unable to start the camera or face landmarker."
         );
 
         onAttentionChange(
@@ -213,40 +257,48 @@ function Camera({
 
     startCamera();
 
-    // =============================
+    // =================================
     // Cleanup
-    // =============================
+    // =================================
 
     return () => {
       cancelled = true;
 
-      // Stop detection loop
       if (
-        animationRef.current !== null
+        animationRef.current !==
+        null
       ) {
         cancelAnimationFrame(
           animationRef.current
         );
 
-        animationRef.current = null;
+        animationRef.current =
+          null;
       }
 
-      // Stop webcam
-      if (streamRef.current !== null) {
+      if (
+        streamRef.current !==
+        null
+      ) {
         streamRef.current
           .getTracks()
-          .forEach((track) => {
-            track.stop();
-          });
+          .forEach(
+            (track) =>
+              track.stop()
+          );
 
-        streamRef.current = null;
+        streamRef.current =
+          null;
       }
 
-      // Reset detection state
-      lastVideoTime.current = -1;
+      lastVideoTime.current =
+        -1;
 
       yawRef.current = 0;
+
       pitchRef.current = 0;
+
+      resetAttentionState();
 
       onAttentionChange(
         "absent"

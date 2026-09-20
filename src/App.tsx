@@ -1,15 +1,19 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
 import "./App.css";
 
 import {
-  BREAK_DURATION,
-  FOCUS_DURATION,
+  clampBreakMinutes,
+  clampFocusMinutes,
+  getAdjustedTimeLeft,
   getNextPhase,
+  getPhaseDuration,
+  type DurationSettings,
   type FocusPhase,
 } from "./focus/focusEngine";
 
@@ -19,66 +23,143 @@ import {
   type SessionRecord,
 } from "./data/sessionStore";
 
+import {
+  getDurationSettings,
+  saveDurationSettings,
+} from "./data/settingsStore";
+
 import Camera from "./components/Camera";
+
+import DurationAdjuster from "./components/DurationAdjuster";
 
 import type {
   AttentionState,
 } from "./vision/attention";
 
-function formatTime(seconds: number) {
+// =========================================
+// Helpers
+// =========================================
+
+function formatTime(
+  seconds: number
+) {
   const minutes =
-    Math.floor(seconds / 60);
+    Math.floor(
+      seconds / 60
+    );
 
   const remainingSeconds =
     seconds % 60;
 
-  return `${String(minutes).padStart(
+  return `${String(
+    minutes
+  ).padStart(
     2,
     "0"
   )}:${String(
     remainingSeconds
-  ).padStart(2, "0")}`;
+  ).padStart(
+    2,
+    "0"
+  )}`;
 }
 
+function formatDuration(
+  seconds: number
+) {
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes =
+    Math.floor(
+      seconds / 60
+    );
+
+  return `${minutes}m`;
+}
+
+// =========================================
+// App
+// =========================================
+
 function App() {
-  // =============================
+  // =======================================
+  // Duration settings
+  // =======================================
+
+  const [durations, setDurations] =
+    useState<DurationSettings>(
+      getDurationSettings
+    );
+
+  // =======================================
   // Timer
-  // =============================
+  // =======================================
 
   const [phase, setPhase] =
-    useState<FocusPhase>("focus");
+    useState<FocusPhase>(
+      "focus"
+    );
 
   const [timeLeft, setTimeLeft] =
-    useState(FOCUS_DURATION);
+    useState(() =>
+      getPhaseDuration(
+        "focus",
+        durations
+      )
+    );
 
   const [isRunning, setIsRunning] =
     useState(false);
 
-  // =============================
+  // =======================================
   // Session
-  // =============================
+  // =======================================
 
-  const [focusedSeconds, setFocusedSeconds] =
-    useState(0);
+  const [
+    focusedSeconds,
+    setFocusedSeconds,
+  ] = useState(0);
 
-  const [breakSeconds, setBreakSeconds] =
-    useState(0);
+  const [
+    breakSeconds,
+    setBreakSeconds,
+  ] = useState(0);
 
-  const [completedBreaks, setCompletedBreaks] =
-    useState(0);
+  const [
+    completedBreaks,
+    setCompletedBreaks,
+  ] = useState(0);
 
-  const [sessionStartedAt, setSessionStartedAt] =
-    useState<string | null>(null);
+  const [
+    sessionStartedAt,
+    setSessionStartedAt,
+  ] =
+    useState<string | null>(
+      null
+    );
 
-  // =============================
-  // AI attention
-  // =============================
+  // =======================================
+  // Camera
+  // =======================================
 
-  const [cameraEnabled, setCameraEnabled] =
-    useState(false);
+  const [
+    cameraEnabled,
+    setCameraEnabled,
+  ] = useState(false);
 
-  const [attentionState, setAttentionState] =
-    useState<AttentionState>("absent");
+  const [
+    attentionState,
+    setAttentionState,
+  ] =
+    useState<AttentionState>(
+      "absent"
+    );
+
+  // =======================================
+  // Attention statistics
+  // =======================================
 
   const [
     attentionFocusedSeconds,
@@ -95,103 +176,307 @@ function App() {
     setAttentionAbsentSeconds,
   ] = useState(0);
 
-  // =============================
+  const [
+    attentionSleepySeconds,
+    setAttentionSleepySeconds,
+  ] = useState(0);
+
+  // =======================================
   // Saved sessions
-  // =============================
+  // =======================================
 
   const [sessions, setSessions] =
-  useState<SessionRecord[]>(() => getSessions());
+    useState<SessionRecord[]>(
+      () => getSessions()
+    );
 
-  // =============================
-  // Timer
-  // =============================
+  // =======================================
+  // Live refs
+  //
+  // Camera changes attention frequently.
+  // Do NOT put attentionState in the timer
+  // interval dependencies.
+  // =======================================
+
+  const phaseRef =
+    useRef(phase);
+
+  const attentionStateRef =
+    useRef(
+      attentionState
+    );
+
+  useEffect(() => {
+    phaseRef.current =
+      phase;
+  }, [phase]);
+
+  useEffect(() => {
+    attentionStateRef.current =
+      attentionState;
+  }, [
+    attentionState,
+  ]);
+
+  // =======================================
+  // Save duration settings
+  // =======================================
+
+  useEffect(() => {
+    saveDurationSettings(
+      durations
+    );
+  }, [durations]);
+
+  // =======================================
+  // Timer tick
+  //
+  // Only depends on isRunning.
+  // =======================================
 
   useEffect(() => {
     if (!isRunning) {
       return;
     }
 
-    const timer = setInterval(() => {
-      // Timer statistics
-      if (phase === "focus") {
-        setFocusedSeconds(
-          (seconds) => seconds + 1
-        );
-      } else {
-        setBreakSeconds(
-          (seconds) => seconds + 1
-        );
-      }
+    const timer =
+      window.setInterval(
+        () => {
+          const currentPhase =
+            phaseRef.current;
 
-      // AI attention statistics
-      if (phase === "focus") {
-        if (
-          attentionState ===
-          "focused"
-        ) {
-          setAttentionFocusedSeconds(
-            (seconds) => seconds + 1
-          );
-        }
+          const currentAttention =
+            attentionStateRef.current;
 
-        if (
-          attentionState === "away"
-        ) {
-          setAttentionAwaySeconds(
-            (seconds) => seconds + 1
-          );
-        }
+          // -------------------------------
+          // Timer statistics
+          // -------------------------------
 
-        if (
-          attentionState === "absent"
-        ) {
-          setAttentionAbsentSeconds(
-            (seconds) => seconds + 1
-          );
-        }
-      }
-
-      // Countdown
-      setTimeLeft(
-        (currentTime) => {
-          if (currentTime > 1) {
-            return currentTime - 1;
-          }
-
-          const nextPhase =
-            getNextPhase(phase);
-
-          if (phase === "break") {
-            setCompletedBreaks(
-              (breaks) => breaks + 1
+          if (
+            currentPhase ===
+            "focus"
+          ) {
+            setFocusedSeconds(
+              (seconds) =>
+                seconds + 1
+            );
+          } else {
+            setBreakSeconds(
+              (seconds) =>
+                seconds + 1
             );
           }
 
-          setPhase(nextPhase);
+          // -------------------------------
+          // AI statistics
+          // -------------------------------
 
-          return nextPhase === "focus"
-            ? FOCUS_DURATION
-            : BREAK_DURATION;
-        }
+          if (
+            currentPhase ===
+            "focus"
+          ) {
+            if (
+              currentAttention ===
+              "focused"
+            ) {
+              setAttentionFocusedSeconds(
+                (seconds) =>
+                  seconds + 1
+              );
+            }
+
+            if (
+              currentAttention ===
+              "away"
+            ) {
+              setAttentionAwaySeconds(
+                (seconds) =>
+                  seconds + 1
+              );
+            }
+
+            if (
+              currentAttention ===
+              "absent"
+            ) {
+              setAttentionAbsentSeconds(
+                (seconds) =>
+                  seconds + 1
+              );
+            }
+
+            if (
+              currentAttention ===
+              "sleepy"
+            ) {
+              setAttentionSleepySeconds(
+                (seconds) =>
+                  seconds + 1
+              );
+            }
+          }
+
+          // -------------------------------
+          // Countdown
+          // -------------------------------
+
+          setTimeLeft(
+            (currentTime) =>
+              currentTime > 0
+                ? currentTime - 1
+                : 0
+          );
+        },
+        1000
       );
-    }, 1000);
 
     return () =>
-      clearInterval(timer);
+      window.clearInterval(
+        timer
+      );
+  }, [isRunning]);
+
+  // =======================================
+  // Phase transition
+  //
+  // Kept OUTSIDE setTimeLeft updater.
+  // =======================================
+
+  useEffect(() => {
+    if (!isRunning) {
+      return;
+    }
+
+    if (timeLeft > 0) {
+      return;
+    }
+
+    const nextPhase =
+      getNextPhase(
+        phase
+      );
+
+    if (
+      phase === "break"
+    ) {
+      setCompletedBreaks(
+        (breaks) =>
+          breaks + 1
+      );
+    }
+
+    setPhase(
+      nextPhase
+    );
+
+    setTimeLeft(
+      getPhaseDuration(
+        nextPhase,
+        durations
+      )
+    );
   }, [
     isRunning,
+    timeLeft,
     phase,
-    attentionState,
+    durations,
   ]);
 
-  // =============================
-  // Start / Pause / Resume
-  // =============================
+  // =======================================
+  // Duration changes
+  // =======================================
+
+  function applyDurations(
+    nextDurations: DurationSettings
+  ) {
+    const currentDuration =
+      getPhaseDuration(
+        phase,
+        durations
+      );
+
+    const nextDuration =
+      getPhaseDuration(
+        phase,
+        nextDurations
+      );
+
+    setDurations(
+      nextDurations
+    );
+
+    if (
+      currentDuration ===
+      nextDuration
+    ) {
+      return;
+    }
+
+    setTimeLeft(
+      (currentTime) =>
+        getAdjustedTimeLeft(
+          currentTime,
+          currentDuration,
+          nextDuration
+        )
+    );
+  }
+
+  function handleFocusMinutesChange(
+    minutes: number
+  ) {
+    applyDurations({
+      ...durations,
+
+      focusMinutes:
+        clampFocusMinutes(
+          minutes
+        ),
+    });
+  }
+
+  function handleBreakMinutesChange(
+    minutes: number
+  ) {
+    applyDurations({
+      ...durations,
+
+      breakMinutes:
+        clampBreakMinutes(
+          minutes
+        ),
+    });
+  }
+
+  // =======================================
+  // Current-clock ±1 minute
+  //
+  // Does NOT change configured duration.
+  // =======================================
+
+  function handleAdjustCurrentPhase(
+    deltaMinutes: number
+  ) {
+    setTimeLeft(
+      (currentTime) =>
+        Math.max(
+          1,
+          currentTime +
+            deltaMinutes *
+              60
+        )
+    );
+  }
+
+  // =======================================
+  // Start / pause
+  // =======================================
 
   function handleStartPause() {
     if (
       !isRunning &&
-      sessionStartedAt === null
+      sessionStartedAt ===
+        null
     ) {
       setSessionStartedAt(
         new Date().toISOString()
@@ -199,131 +484,190 @@ function App() {
     }
 
     setIsRunning(
-      (running) => !running
+      (running) =>
+        !running
     );
   }
 
-  // =============================
+  // =======================================
   // Reset
-  // =============================
+  // =======================================
 
   function handleReset() {
     setIsRunning(false);
 
     setPhase("focus");
-    setTimeLeft(FOCUS_DURATION);
+
+    setTimeLeft(
+      getPhaseDuration(
+        "focus",
+        durations
+      )
+    );
 
     setFocusedSeconds(0);
+
     setBreakSeconds(0);
+
     setCompletedBreaks(0);
 
-    setAttentionFocusedSeconds(0);
-    setAttentionAwaySeconds(0);
-    setAttentionAbsentSeconds(0);
+    setAttentionFocusedSeconds(
+      0
+    );
 
-    setSessionStartedAt(null);
+    setAttentionAwaySeconds(
+      0
+    );
 
-    setAttentionState("absent");
+    setAttentionAbsentSeconds(
+      0
+    );
+
+    setAttentionSleepySeconds(
+      0
+    );
+
+    setSessionStartedAt(
+      null
+    );
+
+    setAttentionState(
+      "absent"
+    );
   }
 
-  // =============================
+  // =======================================
   // End session
-  // =============================
+  // =======================================
 
   function handleEndSession() {
     if (
-      sessionStartedAt === null
+      sessionStartedAt ===
+      null
     ) {
       return;
     }
 
-    const session: SessionRecord = {
-      id: crypto.randomUUID(),
+    const session: SessionRecord =
+      {
+        id: crypto.randomUUID(),
 
-      startedAt:
-        sessionStartedAt,
+        startedAt:
+          sessionStartedAt,
 
-      endedAt:
-        new Date().toISOString(),
+        endedAt:
+          new Date().toISOString(),
 
-      focusedSeconds,
+        focusedSeconds,
 
-      breakSeconds,
+        breakSeconds,
 
-      completedBreaks,
+        completedBreaks,
 
-      attentionFocusedSeconds,
+        attentionFocusedSeconds,
 
-      attentionAwaySeconds,
+        attentionAwaySeconds,
 
-      attentionAbsentSeconds,
-    };
+        attentionAbsentSeconds,
 
-    saveSession(session);
+        attentionSleepySeconds,
+      };
+
+    saveSession(
+      session
+    );
 
     setSessions(
       getSessions()
     );
 
-    // Reset current session
-    setIsRunning(false);
-
-    setSessionStartedAt(null);
-
-    setPhase("focus");
-
-    setTimeLeft(
-      FOCUS_DURATION
-    );
-
-    setFocusedSeconds(0);
-
-    setBreakSeconds(0);
-
-    setCompletedBreaks(0);
-
-    setAttentionFocusedSeconds(0);
-
-    setAttentionAwaySeconds(0);
-
-    setAttentionAbsentSeconds(0);
-
-    setAttentionState("absent");
+    handleReset();
   }
 
-  // =============================
-  // Camera
-  // =============================
+  // =======================================
+  // Camera callback
+  // =======================================
 
   const handleAttentionChange =
-  useCallback(
-    (state: AttentionState) => {
-      setAttentionState(state);
-    },
-    []
-  );
+    useCallback(
+      (
+        state: AttentionState
+      ) => {
+        setAttentionState(
+          state
+        );
+      },
+      []
+    );
 
   function toggleCamera() {
     setCameraEnabled(
-      (enabled) => !enabled
+      (enabled) =>
+        !enabled
     );
   }
 
-  // =============================
+  // =======================================
+  // Attention percentage
+  // =======================================
+
+  const totalAttention =
+    attentionFocusedSeconds +
+    attentionAwaySeconds +
+    attentionAbsentSeconds +
+    attentionSleepySeconds;
+
+  const attentionPercentage =
+    totalAttention > 0
+      ? Math.round(
+          (attentionFocusedSeconds /
+            totalAttention) *
+            100
+        )
+      : 0;
+
+  // =======================================
+  // Status
+  // =======================================
+
+  function getAttentionText() {
+    switch (
+      attentionState
+    ) {
+      case "focused":
+        return "Focused";
+
+      case "away":
+        return "Looking away";
+
+      case "sleepy":
+        return "Looks sleepy";
+
+      case "absent":
+        return "Nobody detected";
+    }
+  }
+
+  // =======================================
   // UI
-  // =============================
+  // =======================================
 
   return (
     <main className="app">
 
+      {/* ================================= */}
       {/* Header */}
+      {/* ================================= */}
 
       <header className="header">
         <div>
-          <h1>Focus AI</h1>
+          <h1>
+            Focus AI
+          </h1>
 
           <p>
-            Your AI-powered focus coach
+            Your AI-powered
+            focus coach
           </p>
         </div>
 
@@ -338,11 +682,15 @@ function App() {
         </div>
       </header>
 
+      {/* ================================= */}
       {/* Dashboard */}
+      {/* ================================= */}
 
       <section className="dashboard">
 
+        {/* ================================= */}
         {/* Timer */}
+        {/* ================================= */}
 
         <div className="card timer-card">
 
@@ -353,7 +701,9 @@ function App() {
           </p>
 
           <div className="timer">
-            {formatTime(timeLeft)}
+            {formatTime(
+              timeLeft
+            )}
           </div>
 
           <div className="phase">
@@ -363,6 +713,40 @@ function App() {
               ? "Focus"
               : "Break"}
           </div>
+
+          {/* Current timer adjustment */}
+
+          {sessionStartedAt !==
+            null && (
+            <div className="quick-adjust">
+              <button
+                type="button"
+                className="quick-adjust-button"
+                disabled={
+                  timeLeft <= 60
+                }
+                onClick={() =>
+                  handleAdjustCurrentPhase(
+                    -1
+                  )
+                }
+              >
+                &minus;1 min
+              </button>
+
+              <button
+                type="button"
+                className="quick-adjust-button"
+                onClick={() =>
+                  handleAdjustCurrentPhase(
+                    1
+                  )
+                }
+              >
+                +1 min
+              </button>
+            </div>
+          )}
 
           <button
             className="primary-button"
@@ -379,10 +763,9 @@ function App() {
 
           <button
             className="secondary-button"
-            onClick={handleReset}
-            style={{
-              marginTop: "10px",
-            }}
+            onClick={
+              handleReset
+            }
           >
             Reset
           </button>
@@ -393,18 +776,18 @@ function App() {
               handleEndSession
             }
             disabled={
-              sessionStartedAt === null
+              sessionStartedAt ===
+              null
             }
-            style={{
-              marginTop: "10px",
-            }}
           >
             End Session
           </button>
 
         </div>
 
+        {/* ================================= */}
         {/* Camera */}
+        {/* ================================= */}
 
         <div className="card camera-card">
 
@@ -413,7 +796,9 @@ function App() {
           </p>
 
           <Camera
-            enabled={cameraEnabled}
+            enabled={
+              cameraEnabled
+            }
             onAttentionChange={
               handleAttentionChange
             }
@@ -421,89 +806,208 @@ function App() {
 
           <button
             className="secondary-button"
-            onClick={toggleCamera}
-            style={{
-              marginTop: "10px",
-            }}
+            onClick={
+              toggleCamera
+            }
           >
             {cameraEnabled
               ? "Disable Camera"
               : "Enable Camera"}
           </button>
 
-          {/* AI status */}
-
           <div
             className={`attention-status ${attentionState}`}
           >
             <span className="attention-dot" />
 
-            {attentionState ===
-              "focused" &&
-              "Focused"}
-
-            {attentionState ===
-              "away" &&
-              "Looking away"}
-
-            {attentionState ===
-              "absent" &&
-              "Nobody detected"}
+            {getAttentionText()}
           </div>
 
         </div>
 
-        {/* Statistics */}
+        {/* ================================= */}
+        {/* Stats + settings */}
+        {/* ================================= */}
 
-        <div className="card stats-card">
+        <div className="stats-column">
 
-          <p className="label">
-            THIS SESSION
-          </p>
+          {/* Session stats */}
 
-          <div className="stat">
-            <span>
-              Focus time
-            </span>
+          <div className="card stats-card">
 
-            <strong>
-              {formatTime(
-                focusedSeconds
-              )}
-            </strong>
+            <p className="label">
+              THIS SESSION
+            </p>
+
+            <div className="stat">
+              <span>
+                Focus time
+              </span>
+
+              <strong>
+                {formatDuration(
+                  focusedSeconds
+                )}
+              </strong>
+            </div>
+
+            <div className="stat">
+              <span>
+                Break time
+              </span>
+
+              <strong>
+                {formatDuration(
+                  breakSeconds
+                )}
+              </strong>
+            </div>
+
+            <div className="stat">
+              <span>
+                AI focused
+              </span>
+
+              <strong>
+                {formatDuration(
+                  attentionFocusedSeconds
+                )}
+              </strong>
+            </div>
+
+            <div className="stat">
+              <span>
+                Looking away
+              </span>
+
+              <strong>
+                {formatDuration(
+                  attentionAwaySeconds
+                )}
+              </strong>
+            </div>
+
+            <div className="stat">
+              <span>
+                Sleepy
+              </span>
+
+              <strong>
+                {formatDuration(
+                  attentionSleepySeconds
+                )}
+              </strong>
+            </div>
+
+            <div className="stat">
+              <span>
+                Breaks
+              </span>
+
+              <strong>
+                {completedBreaks}
+              </strong>
+            </div>
+
           </div>
 
-          <div className="stat">
+          {/* Duration settings */}
+
+          <div className="card settings-card">
+
+            <p className="label">
+              TIMER SETTINGS
+            </p>
+
+            <DurationAdjuster
+              durations={
+                durations
+              }
+              onFocusMinutesChange={
+                handleFocusMinutesChange
+              }
+              onBreakMinutesChange={
+                handleBreakMinutesChange
+              }
+            />
+
+          </div>
+
+        </div>
+
+      </section>
+
+      {/* ================================= */}
+      {/* Attention overview */}
+      {/* ================================= */}
+
+      <section className="card attention-card">
+
+        <div className="attention-header">
+          <div>
+            <p className="label">
+              AI ATTENTION
+            </p>
+
+            <p className="attention-description">
+              How your attention was
+              classified during focus
+              time.
+            </p>
+          </div>
+
+          <strong className="attention-score">
+            {attentionPercentage}%
+          </strong>
+        </div>
+
+        <div className="attention-list">
+
+          <div className="attention-stat">
             <span>
-              AI focused
+              Focused
             </span>
 
             <strong>
-              {formatTime(
+              {formatDuration(
                 attentionFocusedSeconds
               )}
             </strong>
           </div>
 
-          <div className="stat">
+          <div className="attention-stat">
             <span>
-              Looking away
+              Away
             </span>
 
             <strong>
-              {formatTime(
+              {formatDuration(
                 attentionAwaySeconds
               )}
             </strong>
           </div>
 
-          <div className="stat">
+          <div className="attention-stat">
             <span>
-              Breaks
+              Sleepy
             </span>
 
             <strong>
-              {completedBreaks}
+              {formatDuration(
+                attentionSleepySeconds
+              )}
+            </strong>
+          </div>
+
+          <div className="attention-stat">
+            <span>
+              Absent
+            </span>
+
+            <strong>
+              {formatDuration(
+                attentionAbsentSeconds
+              )}
             </strong>
           </div>
 
@@ -511,7 +1015,9 @@ function App() {
 
       </section>
 
+      {/* ================================= */}
       {/* Timeline */}
+      {/* ================================= */}
 
       <section className="card timeline-card">
 
@@ -521,53 +1027,70 @@ function App() {
 
         <div className="timeline">
 
-          {sessions.length === 0 ? (
+          {sessions.length ===
+          0 ? (
             <div className="timeline-empty">
-              Start a session to begin
-              tracking your focus.
+              Start a session to
+              begin tracking your
+              focus.
             </div>
           ) : (
             sessions
               .slice()
               .reverse()
-              .map((session) => (
-                <div
-                  className="session-item"
-                  key={session.id}
-                >
-                  <strong>
-                    {new Date(
-                      session.startedAt
-                    ).toLocaleString()}
-                  </strong>
+              .map(
+                (
+                  session
+                ) => (
+                  <div
+                    className="session-item"
+                    key={
+                      session.id
+                    }
+                  >
+                    <strong>
+                      {new Date(
+                        session.startedAt
+                      ).toLocaleString()}
+                    </strong>
 
-                  <p>
-                    Timer focus:{" "}
-                    {formatTime(
-                      session.focusedSeconds
-                    )}
+                    <p>
+                      Timer focus:{" "}
+                      {formatDuration(
+                        session.focusedSeconds
+                      )}
 
-                    {" · "}
+                      {" · "}
 
-                    AI focused:{" "}
-                    {formatTime(
-                      session.attentionFocusedSeconds
-                    )}
+                      AI focused:{" "}
+                      {formatDuration(
+                        session.attentionFocusedSeconds
+                      )}
 
-                    {" · "}
+                      {" · "}
 
-                    Away:{" "}
-                    {formatTime(
-                      session.attentionAwaySeconds
-                    )}
+                      Away:{" "}
+                      {formatDuration(
+                        session.attentionAwaySeconds
+                      )}
 
-                    {" · "}
+                      {" · "}
 
-                    Breaks:{" "}
-                    {session.completedBreaks}
-                  </p>
-                </div>
-              ))
+                      Sleepy:{" "}
+                      {formatDuration(
+                        session.attentionSleepySeconds
+                      )}
+
+                      {" · "}
+
+                      Breaks:{" "}
+                      {
+                        session.completedBreaks
+                      }
+                    </p>
+                  </div>
+                )
+              )
           )}
 
         </div>
