@@ -78,3 +78,38 @@ export function saveDurationSettings(
     JSON.stringify(durations)
   );
 }
+
+const REMINDER_STORAGE_KEY = "focus-ai-reminder-settings";
+
+export interface ReminderSettings {
+  thresholdSeconds: number;
+  soundEnabled: boolean;
+}
+
+export const DEFAULT_REMINDER_SETTINGS: ReminderSettings = {
+  thresholdSeconds: 15,
+  soundEnabled: true,
+};
+
+export function getReminderSettings(): ReminderSettings {
+  try {
+    const raw = localStorage.getItem(REMINDER_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_REMINDER_SETTINGS };
+    const parsed = JSON.parse(raw) as Partial<ReminderSettings>;
+    const threshold = Number(parsed.thresholdSeconds);
+    return {
+      thresholdSeconds: Number.isFinite(threshold)
+        ? Math.max(5, Math.min(120, Math.round(threshold)))
+        : DEFAULT_REMINDER_SETTINGS.thresholdSeconds,
+      soundEnabled: typeof parsed.soundEnabled === "boolean"
+        ? parsed.soundEnabled
+        : DEFAULT_REMINDER_SETTINGS.soundEnabled,
+    };
+  } catch {
+    return { ...DEFAULT_REMINDER_SETTINGS };
+  }
+}
+
+export function saveReminderSettings(settings: ReminderSettings) {
+  localStorage.setItem(REMINDER_STORAGE_KEY, JSON.stringify(settings));
+}

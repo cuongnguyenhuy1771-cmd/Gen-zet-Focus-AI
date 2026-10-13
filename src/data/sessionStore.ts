@@ -18,6 +18,18 @@ export interface SessionRecord {
   attentionAbsentSeconds: number;
 
   attentionSleepySeconds: number;
+
+  /** Seconds classified as distracted (away, absent, or sleepy) during focus phases. */
+  distractedSeconds: number;
+
+  /** Number of distinct distraction episodes during the session. */
+  distractionEpisodes: number;
+
+  /** Longest continuous distraction episode, in seconds. */
+  longestDistractionSeconds: number;
+
+  /** Number of reminders shown during the session. */
+  remindersShown: number;
 }
 
 const STORAGE_KEY =
@@ -63,6 +75,18 @@ function normalizeSession(
     attentionSleepySeconds:
       session.attentionSleepySeconds ??
       0,
+
+    distractedSeconds:
+      session.distractedSeconds ?? 0,
+
+    distractionEpisodes:
+      session.distractionEpisodes ?? 0,
+
+    longestDistractionSeconds:
+      session.longestDistractionSeconds ?? 0,
+
+    remindersShown:
+      session.remindersShown ?? 0,
   };
 }
 

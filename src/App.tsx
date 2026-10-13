@@ -26,6 +26,9 @@ import {
 import {
   getDurationSettings,
   saveDurationSettings,
+  getReminderSettings,
+  saveReminderSettings,
+  type ReminderSettings,
 } from "./data/settingsStore";
 
 import Camera from "./components/Camera";
@@ -92,6 +95,22 @@ function App() {
     useState<DurationSettings>(
       getDurationSettings
     );
+
+  const [reminderSettings, setReminderSettings] =
+    useState<ReminderSettings>(getReminderSettings);
+  const [distractionSeconds, setDistractionSeconds] = useState(0);
+  const [currentDistractionSeconds, setCurrentDistractionSeconds] = useState(0);
+  const [longestDistractionSeconds, setLongestDistractionSeconds] = useState(0);
+  const [distractionEpisodes, setDistractionEpisodes] = useState(0);
+  const [remindersShown, setRemindersShown] = useState(0);
+  const [reminderMessage, setReminderMessage] = useState<string | null>(null);
+  const [reminderVisible, setReminderVisible] = useState(false);
+
+  const distractionStreakRef = useRef(0);
+  const reminderShownThisEpisodeRef = useRef(false);
+  const cameraEnabledRef = useRef(false);
+  const reminderSettingsRef = useRef(reminderSettings);
+  const isRunningRef = useRef(false);
 
   // =======================================
   // Timer
@@ -218,6 +237,25 @@ function App() {
     attentionState,
   ]);
 
+  useEffect(() => {
+    cameraEnabledRef.current = cameraEnabled;
+    if (!cameraEnabled) {
+      distractionStreakRef.current = 0;
+      setCurrentDistractionSeconds(0);
+      reminderShownThisEpisodeRef.current = false;
+      setReminderVisible(false);
+    }
+  }, [cameraEnabled]);
+
+  useEffect(() => {
+    reminderSettingsRef.current = reminderSettings;
+    saveReminderSettings(reminderSettings);
+  }, [reminderSettings]);
+
+  useEffect(() => {
+    isRunningRef.current = isRunning;
+  }, [isRunning]);
+
   // =======================================
   // Save duration settings
   // =======================================
@@ -265,6 +303,67 @@ function App() {
               (seconds) =>
                 seconds + 1
             );
+          }
+
+          // -------------------------------
+          // Distraction tracking + reminder
+          // Count only during an active focus phase with camera enabled.
+          // A short interruption is tracked, but reminders wait for threshold.
+          // -------------------------------
+          if (currentPhase === "focus" && cameraEnabledRef.current) {
+            if (currentAttention !== "focused") {
+              distractionStreakRef.current += 1;
+              setDistractionSeconds((seconds) => seconds + 1);
+              setCurrentDistractionSeconds(distractionStreakRef.current);
+              setLongestDistractionSeconds((longest) =>
+                Math.max(longest, distractionStreakRef.current)
+              );
+
+              const threshold = reminderSettingsRef.current.thresholdSeconds;
+              if (
+                distractionStreakRef.current >= threshold &&
+                !reminderShownThisEpisodeRef.current
+              ) {
+                reminderShownThisEpisodeRef.current = true;
+                setRemindersShown((count) => count + 1);
+                setReminderMessage(
+                  `You've been away from focus for ${distractionStreakRef.current} seconds. Ready to get back on track?`
+                );
+                setReminderVisible(true);
+
+                if (reminderSettingsRef.current.soundEnabled) {
+                  try {
+                    const AudioContextClass =
+                      window.AudioContext ||
+                      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+                    if (AudioContextClass) {
+                      const audio = new AudioContextClass();
+                      const oscillator = audio.createOscillator();
+                      const gain = audio.createGain();
+                      oscillator.connect(gain);
+                      gain.connect(audio.destination);
+                      oscillator.frequency.value = 740;
+                      gain.gain.value = 0.08;
+                      oscillator.start();
+                      oscillator.stop(audio.currentTime + 0.16);
+                      oscillator.onended = () => void audio.close();
+                    }
+                  } catch {
+                    // Audio is optional; the visual reminder still works.
+                  }
+                }
+              }
+            } else {
+              distractionStreakRef.current = 0;
+              setCurrentDistractionSeconds(0);
+              reminderShownThisEpisodeRef.current = false;
+              setReminderVisible(false);
+            }
+          } else {
+            distractionStreakRef.current = 0;
+            setCurrentDistractionSeconds(0);
+            reminderShownThisEpisodeRef.current = false;
+            setReminderVisible(false);
           }
 
           // -------------------------------
@@ -368,6 +467,11 @@ function App() {
     setPhase(
       nextPhase
     );
+
+    distractionStreakRef.current = 0;
+    setCurrentDistractionSeconds(0);
+    reminderShownThisEpisodeRef.current = false;
+    setReminderVisible(false);
 
     setTimeLeft(
       getPhaseDuration(
@@ -523,9 +627,16 @@ function App() {
       0
     );
 
-    setAttentionSleepySeconds(
-      0
-    );
+    setAttentionSleepySeconds(0);
+    setDistractionSeconds(0);
+    setCurrentDistractionSeconds(0);
+    setLongestDistractionSeconds(0);
+    setDistractionEpisodes(0);
+    setRemindersShown(0);
+    setReminderVisible(false);
+    setReminderMessage(null);
+    distractionStreakRef.current = 0;
+    reminderShownThisEpisodeRef.current = false;
 
     setSessionStartedAt(
       null
@@ -571,6 +682,11 @@ function App() {
         attentionAbsentSeconds,
 
         attentionSleepySeconds,
+
+        distractedSeconds: distractionSeconds,
+        distractionEpisodes,
+        longestDistractionSeconds,
+        remindersShown,
       };
 
     saveSession(
@@ -593,12 +709,42 @@ function App() {
       (
         state: AttentionState
       ) => {
-        setAttentionState(
-          state
-        );
+        const previous = attentionStateRef.current;
+        if (
+          isRunningRef.current &&
+          phaseRef.current === "focus" &&
+          cameraEnabledRef.current &&
+          previous === "focused" &&
+          state !== "focused"
+        ) {
+          setDistractionEpisodes((count) => count + 1);
+        }
+        if (state === "focused") {
+          setReminderVisible(false);
+        }
+        attentionStateRef.current = state;
+        setAttentionState(state);
       },
       []
     );
+
+  function updateReminderThreshold(value: number) {
+    setReminderSettings((current) => ({
+      ...current,
+      thresholdSeconds: Math.max(5, Math.min(120, Math.round(value))),
+    }));
+  }
+
+  function toggleReminderSound() {
+    setReminderSettings((current) => ({
+      ...current,
+      soundEnabled: !current.soundEnabled,
+    }));
+  }
+
+  function dismissReminder() {
+    setReminderVisible(false);
+  }
 
   function toggleCamera() {
     setCameraEnabled(
@@ -681,6 +827,16 @@ function App() {
               : "Ready"}
         </div>
       </header>
+
+      {reminderVisible && reminderMessage && isRunning && phase === "focus" && (
+        <section className="distraction-reminder" role="status" aria-live="polite">
+          <div>
+            <strong>Gentle focus reminder</strong>
+            <p>{reminderMessage}</p>
+          </div>
+          <button type="button" onClick={dismissReminder}>Got it</button>
+        </section>
+      )}
 
       {/* ================================= */}
       {/* Dashboard */}
@@ -888,15 +1044,33 @@ function App() {
             </div>
 
             <div className="stat">
-              <span>
-                Sleepy
-              </span>
+              <span>Sleepy</span>
+              <strong>{formatDuration(attentionSleepySeconds)}</strong>
+            </div>
 
-              <strong>
-                {formatDuration(
-                  attentionSleepySeconds
-                )}
-              </strong>
+            <div className="stat">
+              <span>Total distracted</span>
+              <strong>{formatDuration(distractionSeconds)}</strong>
+            </div>
+
+            <div className="stat">
+              <span>Distraction episodes</span>
+              <strong>{distractionEpisodes}</strong>
+            </div>
+
+            <div className="stat">
+              <span>Current distraction</span>
+              <strong>{formatDuration(currentDistractionSeconds)}</strong>
+            </div>
+
+            <div className="stat">
+              <span>Longest distraction</span>
+              <strong>{formatDuration(longestDistractionSeconds)}</strong>
+            </div>
+
+            <div className="stat">
+              <span>Reminders shown</span>
+              <strong>{remindersShown}</strong>
             </div>
 
             <div className="stat">
@@ -920,16 +1094,37 @@ function App() {
             </p>
 
             <DurationAdjuster
-              durations={
-                durations
-              }
-              onFocusMinutesChange={
-                handleFocusMinutesChange
-              }
-              onBreakMinutesChange={
-                handleBreakMinutesChange
-              }
+              durations={durations}
+              onFocusMinutesChange={handleFocusMinutesChange}
+              onBreakMinutesChange={handleBreakMinutesChange}
             />
+
+            <div className="reminder-settings">
+              <label htmlFor="reminder-threshold">
+                Remind me after
+                <strong>{reminderSettings.thresholdSeconds}s</strong>
+              </label>
+              <input
+                id="reminder-threshold"
+                type="range"
+                min="5"
+                max="120"
+                step="5"
+                value={reminderSettings.thresholdSeconds}
+                onChange={(event) => updateReminderThreshold(Number(event.target.value))}
+              />
+              <label className="sound-setting">
+                <input
+                  type="checkbox"
+                  checked={reminderSettings.soundEnabled}
+                  onChange={toggleReminderSound}
+                />
+                Play reminder sound
+              </label>
+              <p className="settings-note">
+                Reminders appear once per distraction episode. Tracking runs only during an active focus phase while the camera is enabled.
+              </p>
+            </div>
 
           </div>
 
@@ -997,6 +1192,16 @@ function App() {
                 attentionSleepySeconds
               )}
             </strong>
+          </div>
+
+          <div className="attention-stat">
+            <span>Total distracted</span>
+            <strong>{formatDuration(distractionSeconds)}</strong>
+          </div>
+
+          <div className="attention-stat">
+            <span>Reminders</span>
+            <strong>{remindersShown}</strong>
           </div>
 
           <div className="attention-stat">
@@ -1082,11 +1287,11 @@ function App() {
                       )}
 
                       {" · "}
-
-                      Breaks:{" "}
-                      {
-                        session.completedBreaks
-                      }
+                      Distracted: {formatDuration(session.distractedSeconds ?? 0)}
+                      {" · "}
+                      Episodes: {session.distractionEpisodes ?? 0}
+                      {" · "}
+                      Breaks: {session.completedBreaks}
                     </p>
                   </div>
                 )

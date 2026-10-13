@@ -135,8 +135,8 @@ export function getNextPhase(
 // Duration adjustment
 //
 // Changing 25 -> 30 while 20 minutes
-// remain gives 25 minutes remaining.
-//
+// remain gives 25commentting stuff kieru wtf are we doing ?/ minutes remaining.
+//Kieur wtf let int stuff 
 // Changing 25 -> 20 while 20 minutes
 // remain gives 15 minutes remaining.
 //
